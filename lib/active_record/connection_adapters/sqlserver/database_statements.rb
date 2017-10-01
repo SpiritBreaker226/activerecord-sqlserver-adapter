@@ -218,12 +218,26 @@ module ActiveRecord
         end
 
         def sql_for_insert(sql, pk, id_value, sequence_name, binds)
-          sql = if pk && self.class.use_output_inserted && !database_prefix_remote_server?
-            quoted_pk = SQLServer::Utils.extract_identifiers(pk).quoted
-            sql.insert sql.index(/ (DEFAULT )?VALUES/), " OUTPUT INSERTED.#{quoted_pk}"
-          else
-            "#{sql}; SELECT CAST(SCOPE_IDENTITY() AS bigint) AS Ident"
+          if pk.nil?
+            table_name = query_requires_identity_insert?(sql)
+            pk = primary_key(table_name)
           end
+          sql = if pk && use_output_inserted? && !database_prefix_remote_server?
+                  quoted_pk = SQLServer::Utils.extract_identifiers(pk).quoted
+                  exclude_output_inserted = exclude_output_inserted_table_name?(table_name, sql)
+                  if exclude_output_inserted
+                    id_sql_type = exclude_output_inserted.is_a?(TrueClass) ? 'bigint' : exclude_output_inserted
+                    <<-SQL.strip_heredoc
+                      DECLARE @ssaIdInsertTable table (#{quoted_pk} #{id_sql_type});
+                      #{sql.dup.insert sql.index(/ (DEFAULT )?VALUES/), " OUTPUT INSERTED.#{quoted_pk} INTO @ssaIdInsertTable"}
+                      SELECT CAST(#{quoted_pk} AS #{id_sql_type}) FROM @ssaIdInsertTable
+                    SQL
+                  else
+                    sql.dup.insert sql.index(/ (DEFAULT )?VALUES/), " OUTPUT INSERTED.#{quoted_pk}"
+                  end
+                else
+                  "#{sql}; SELECT CAST(SCOPE_IDENTITY() AS bigint) AS Ident"
+                end
           super
         end
 
@@ -305,6 +319,46 @@ module ActiveRecord
           end
         ensure
           @update_sql = false
+        end
+
+        # === SQLServer Specific (Identity Inserts) ===================== #
+
+        def use_output_inserted?
+          self.class.use_output_inserted
+        end
+
+        def exclude_output_inserted_table_names?
+          !self.class.exclude_output_inserted_table_names.empty?
+        end
+
+        def exclude_output_inserted_table_name?(table_name, sql)
+          return false unless exclude_output_inserted_table_names?
+          table_name ||= get_table_name(sql)
+          return false unless table_name
+          self.class.exclude_output_inserted_table_names[table_name]
+        end
+
+        def exec_insert_requires_identity?(sql, pk, binds)
+          query_requires_identity_insert?(sql) if pk && binds.map(&:name).include?(pk)
+        end
+
+        def query_requires_identity_insert?(sql)
+          if insert_sql?(sql)
+            table_name = get_table_name(sql)
+            id_column = identity_columns(table_name).first
+            # id_column && sql =~ /^\s*(INSERT|EXEC sp_executesql N'INSERT)[^(]+\([^)]*\b(#{id_column.name})\b,?[^)]*\)/i ? quote_table_name(table_name) : false
+            id_column && sql =~ /^\s*(INSERT|EXEC sp_executesql N'INSERT)[^(]+\([^)]*\b(#{id_column.name})\b,?[^)]*\)/i ? table_name : false
+          else
+            false
+          end
+        end
+
+        def insert_sql?(sql)
+          !(sql =~ /^\s*(INSERT|EXEC sp_executesql N'INSERT)/i).nil?
+        end
+
+        def identity_columns(table_name)
+          schema_cache.columns(table_name).select(&:is_identity?)
         end
 
         # === SQLServer Specific (Selecting) ============================ #

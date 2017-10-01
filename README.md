@@ -27,7 +27,6 @@ Account.execute_procedure :update_totals, 'admin', nil, true
 Account.execute_procedure :update_totals, named: 'params'
 ```
 
-
 #### Native Data Type Support
 
 We support every data type supported by FreeTDS and then a few more. All simplified Rails types in migrations will coorespond to a matching SQL Server national (unicode) data type. Here is a basic chart. Always check the `initialize_native_database_types` method for an updated list.
@@ -73,6 +72,21 @@ The following types require TDS version 7.3 with TinyTDS. This requires the late
 Set `tds_version` in your database.yml or the `TDSVER` environment variable to `7.3` to ensure you are using the proper protocol version till 7.3 becomes the default.
 
 **Zone Conversion** - The `[datetimeoffset]` type is the only ActiveRecord time based datatype that does not cast the zone to ActiveRecord's default - typically UTC. As intended, this datatype is meant to maintain the zone you pass to it and/or retreived from the database.
+
+
+#### Identity Inserts with Triggers
+
+The adapter uses `OUTPUT INSERTED` so that we can select any data type key, for example UUID tables. However, this poses a problem with tables that use triggers. The solution requires that we use a more complex insert statement which uses a temporary table to select the inserted identity. To use this format you must declare your table exempt from the simple output inserted style with the table name into a concurrent hash. Optionally, you can set the data type of the table's primary key to return.
+
+```ruby
+adapter = ActiveRecord::ConnectionAdapters::SQLServerAdapter
+
+# Will assume `bigint` as the id key temp table type.
+adapter.exclude_output_inserted_table_names['my_table_name'] = true
+
+# Explicitly set the data type for the temporary key table.
+adapter.exclude_output_inserted_table_names['my_uuid_table_name'] = 'uniqueidentifier'
+```
 
 
 #### Force Schema To Lowercase
